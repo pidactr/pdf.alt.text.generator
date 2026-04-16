@@ -599,8 +599,8 @@ function injectAltTextsIntoPdf(pdfBuf, altTexts) {
   }
 
   // Build map: objNum -> altText by positional matching against filtered content images
+  // Strip nulls from altTexts first so index alignment is clean
   var altMap = {};
-  // Build a compact array of only the non-null alt texts to align with filtered image list
   var altTextsCompact = altTexts.filter(function(a) { return a && a.trim().length > 0; });
   for (var i = 0; i < altTextsCompact.length && i < imageObjNums.length; i++) {
     altMap[imageObjNums[i]] = altTextsCompact[i];
