@@ -404,12 +404,13 @@ async function convertPdfToDocx(pdfArrayBuffer) {
 // ============================================================
 // STEP 3: DOCX -> PDF via Cloudflare Worker + Adobe API
 // ============================================================
-async function convertDocxToPdf(docxArrayBuffer) {
+async function convertDocxToPdf(docxArrayBuffer, altTexts) {
   var b64 = bufToB64(docxArrayBuffer);
   var res = await fetch(PROXY_URL + "/convert-to-pdf", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({docx: b64})
+    // Send approved alt texts alongside the DOCX so worker can inject them into the final PDF
+    body: JSON.stringify({docx: b64, altTexts: altTexts || []})
   });
   if (!res.ok) {
     var errText = await res.text();
@@ -603,7 +604,12 @@ async function buildDocument() {
     // Convert DOCX -> PDF via worker
     document.getElementById("overlay-label").textContent = "Converting to PDF...";
     setStep("step-convert-out", "active");
-    var pdfBuf = await convertDocxToPdf(docxBytes.buffer);
+    // Collect approved alt texts in order to inject into final PDF
+    var altTextsOrdered = imageItems.map(function(item) {
+      return item.status === "approved" && item.altText && item.altText.trim()
+        ? item.altText.trim() : null;
+    });
+    var pdfBuf = await convertDocxToPdf(docxBytes.buffer, altTextsOrdered);
     setStep("step-convert-out", "done");
 
     // Download the PDF
