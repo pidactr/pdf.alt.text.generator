@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>PDF Alt Text Generator</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
@@ -570,6 +571,101 @@ function applyAltTexts(approvedMap) {
 }
 
 // ============================================================
+// EXTRACT IMAGES DIRECTLY FROM PDF BYTES (second-pass)
+// Finds images that Adobe dropped during PDF->DOCX conversion.
+// Returns array of { objNum, w, h, b64, mime, streamBytes }
+// ============================================================
+function extractPdfImages(pdfBuf) {
+  var bytes = new Uint8Array(pdfBuf);
+  var text = "";
+  for (var i = 0; i < bytes.length; i++) text += String.fromCharCode(bytes[i]);
+
+  var results = [];
+  var seen = {};
+  var objPattern = /(\d+) 0 obj/g;
+  var m;
+
+  while ((m = objPattern.exec(text)) !== null) {
+    var objNum = parseInt(m[1]);
+    if (seen[objNum]) continue;
+    var rawSnippet = text.slice(m.index, m.index + 800);
+    var endobjIdx = rawSnippet.indexOf("endobj");
+    var snippet = endobjIdx !== -1 ? rawSnippet.slice(0, endobjIdx) : rawSnippet.slice(0, 600);
+    if (snippet.indexOf("/Subtype /Image") === -1 && snippet.indexOf("/Subtype/Image") === -1) continue;
+    if (snippet.indexOf("/ColorSpace") === -1) continue;
+    if (snippet.indexOf("/DeviceGray") !== -1 || snippet.indexOf("/DeviceGrey") !== -1) continue;
+    var wMatch = snippet.match(/\/Width\s+(\d+)/);
+    var hMatch = snippet.match(/\/Height\s+(\d+)/);
+    var w = wMatch ? parseInt(wMatch[1]) : 0;
+    var h = hMatch ? parseInt(hMatch[1]) : 0;
+    if (w < 50 || h < 50) continue;
+    seen[objNum] = true;
+
+    var sk = rawSnippet.indexOf("stream");
+    if (sk === -1) continue;
+    var streamStart = m.index + sk + 6;
+    if (text[streamStart] === "\r") streamStart++;
+    if (text[streamStart] === "\n") streamStart++;
+
+    var lenMatch = snippet.match(/\/Length\s+(\d+)/);
+    var streamLen = lenMatch ? parseInt(lenMatch[1]) : -1;
+    if (streamLen <= 0 || streamLen > 20 * 1024 * 1024) continue;
+
+    var streamBytes = new Uint8Array(streamLen);
+    for (var j = 0; j < streamLen; j++) {
+      streamBytes[j] = text.charCodeAt(streamStart + j) & 0xff;
+    }
+
+    var isJpeg = snippet.indexOf("/DCTDecode") !== -1;
+    var isFlate = snippet.indexOf("/FlateDecode") !== -1;
+    var imgBytes = null;
+    var mime = null;
+
+    if (isJpeg) {
+      imgBytes = streamBytes;
+      mime = "image/jpeg";
+    } else if (isFlate && typeof pako !== "undefined") {
+      try {
+        var inflated = pako.inflate(streamBytes);
+        var hasPngPredictor = snippet.indexOf("/Predictor") !== -1;
+        var canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        var ctx = canvas.getContext("2d");
+        var imageData = ctx.createImageData(w, h);
+        var pd = imageData.data;
+        var srcIdx = 0, dstIdx = 0;
+        for (var row = 0; row < h; row++) {
+          if (hasPngPredictor) srcIdx++;
+          for (var col = 0; col < w; col++) {
+            pd[dstIdx++] = inflated[srcIdx++];
+            pd[dstIdx++] = inflated[srcIdx++];
+            pd[dstIdx++] = inflated[srcIdx++];
+            pd[dstIdx++] = 255;
+          }
+        }
+        ctx.putImageData(imageData, 0, 0);
+        var dataUrl = canvas.toDataURL("image/png");
+        var b64part = dataUrl.split(",")[1];
+        var dec = atob(b64part);
+        imgBytes = new Uint8Array(dec.length);
+        for (var k = 0; k < dec.length; k++) imgBytes[k] = dec.charCodeAt(k);
+        mime = "image/png";
+      } catch(e) { continue; }
+    } else { continue; }
+
+    var b64 = "";
+    var chunkSize = 8192;
+    for (var ci = 0; ci < imgBytes.length; ci += chunkSize) {
+      b64 += String.fromCharCode.apply(null, imgBytes.subarray(ci, ci + chunkSize));
+    }
+    b64 = btoa(b64);
+
+    results.push({ objNum: objNum, w: w, h: h, b64: b64, mime: mime, streamBytes: streamBytes });
+  }
+  return results;
+}
+
+// ============================================================
 // INJECT ALT TEXTS INTO PDF BYTES — hash-based matching
 // altTextItems: array of { altText: string, imgBytes: Uint8Array|null }
 // Strategy:
@@ -660,7 +756,7 @@ async function injectAltTextsIntoPdf(pdfBuf, altTextItems) {
     }
   }
 
-  // Match DOCX images to PDF objects
+  // Match alt texts to PDF image objects
   var altMap = {};
   var usedObjNums = {};
   var unmatched = [];
@@ -668,6 +764,15 @@ async function injectAltTextsIntoPdf(pdfBuf, altTextItems) {
   for (var i = 0; i < altTextItems.length; i++) {
     var item = altTextItems[i];
     if (!item || !item.altText || !item.altText.trim()) continue;
+
+    // PDF-only items (second-pass) have a direct pdfObjNum — inject by obj number
+    if (item.pdfObjNum !== undefined) {
+      altMap[item.pdfObjNum] = item.altText.trim();
+      usedObjNums[item.pdfObjNum] = true;
+      continue;
+    }
+
+    // DOCX items: try hash match first
     var matched = false;
     if (item.imgBytes && item.imgBytes.length > 0) {
       var h = quickHash(item.imgBytes);
@@ -681,7 +786,7 @@ async function injectAltTextsIntoPdf(pdfBuf, altTextItems) {
     if (!matched) unmatched.push(item);
   }
 
-  // Positional fallback for any unmatched items
+  // Positional fallback for unmatched DOCX items
   var unmatchedPdf = pdfImages.filter(function(img) { return !usedObjNums[img.objNum]; });
   for (var i = 0; i < unmatched.length && i < unmatchedPdf.length; i++) {
     var objNum = unmatchedPdf[i].objNum;
@@ -823,12 +928,17 @@ async function buildDocument() {
     // Convert DOCX -> PDF via worker
     document.getElementById("overlay-label").textContent = "Converting to PDF...";
     setStep("step-convert-out", "active");
-    // Collect approved items with raw image bytes for hash-based PDF injection
+    // Collect approved items for PDF injection
+    // DOCX items use hash matching; PDF-only items (second-pass) use direct pdfObjNum injection
     var altTextItems = [];
     for (var i = 0; i < imageItems.length; i++) {
       var item = imageItems[i];
       if (item.status === "approved" && item.altText && item.altText.trim()) {
-        altTextItems.push({ altText: item.altText.trim(), imgBytes: item.imgBytes || null });
+        altTextItems.push({
+          altText: item.altText.trim(),
+          imgBytes: item.imgBytes || null,
+          pdfObjNum: item.pdfObjNum !== undefined ? item.pdfObjNum : undefined
+        });
       }
     }
     var pdfBuf = await convertDocxToPdf(docxBytes.buffer, altTextItems);
@@ -990,6 +1100,88 @@ async function run(file) {
         cardEl.appendChild(errDiv);
       }
       updateProgress();
+    }
+
+    // ============================================================
+    // SECOND PASS: find images Adobe dropped from DOCX, analyze directly from PDF
+    // ============================================================
+    setStep("step-analyze", "active");
+    showStatus("Checking for images missed during conversion...", "info");
+
+    // Build set of objNums already covered by hash matching
+    // We do a dry-run of the PDF image scan to find all content image objNums
+    var pdfAllImages = extractPdfImages(pdfBuf);
+    var docxImgHashes = {};
+
+    // Build quick hash of each DOCX image's bytes for comparison
+    function quickHashBytes(data) {
+      if (!data || data.length === 0) return "empty_0";
+      var step = Math.max(1, Math.floor(data.length / 512));
+      var h = data.length;
+      for (var qi = 0; qi < data.length; qi += step) h = ((h * 31) + data[qi]) >>> 0;
+      return h.toString(16) + "_" + data.length;
+    }
+
+    imageItems.forEach(function(item) {
+      if (item.imgBytes) docxImgHashes[quickHashBytes(item.imgBytes)] = true;
+    });
+
+    // Find PDF images whose stream bytes don't hash-match any DOCX image
+    // These are the ones Adobe dropped
+    var missedImages = pdfAllImages.filter(function(pdfImg) {
+      return !docxImgHashes[quickHashBytes(pdfImg.streamBytes)];
+    });
+
+    if (missedImages.length > 0) {
+      showStatus("Found " + missedImages.length + " additional image(s) not in Word document. Analyzing...", "info");
+
+      for (var mi = 0; mi < missedImages.length; mi++) {
+        var pdfImg = missedImages[mi];
+        var itemNum = imageItems.length + 1;
+        var rId = "pdf_obj_" + pdfImg.objNum; // synthetic rId for PDF-only images
+        var item = {
+          rId: rId,
+          filename: "pdf_image_" + pdfImg.objNum + (pdfImg.mime === "image/jpeg" ? ".jpg" : ".png"),
+          num: itemNum,
+          thumbUrl: null,
+          fullUrl: null,
+          altText: "",
+          status: "pending",
+          imgBytes: pdfImg.streamBytes,
+          pdfObjNum: pdfImg.objNum  // direct injection target
+        };
+
+        imageItems.push(item);
+        var cardEl2 = document.createElement("div");
+        cardEl2.id = "card-" + rId;
+        cardsEl.appendChild(cardEl2);
+        renderCard(item, cardEl2);
+
+        var ta2 = document.getElementById("ta-" + rId);
+        if (ta2) { ta2.value = "Generating..."; ta2.disabled = true; autoResize(ta2); }
+
+        slabel.textContent = "Analyzing PDF image " + (mi + 1) + " of " + missedImages.length + "...";
+        progressText.textContent = "Analyzing PDF image " + (mi + 1) + " of " + missedImages.length + "...";
+
+        try {
+          var rawUrl2 = "data:" + pdfImg.mime + ";base64," + pdfImg.b64;
+          item.fullUrl = rawUrl2;
+          item.thumbUrl = await makeThumbnail(rawUrl2);
+          var alt2 = await describeImage(pdfImg.b64, pdfImg.mime);
+          item.altText = alt2; item.status = "pending";
+          if (ta2) { ta2.value = alt2; ta2.disabled = false; autoResize(ta2); }
+          renderCard(item, cardEl2); autoResizeAll();
+        } catch(e2) {
+          item.altText = ""; item.status = "pending";
+          if (ta2) { ta2.value = ""; ta2.disabled = false; }
+          renderCard(item, cardEl2);
+          var errDiv2 = document.createElement("div");
+          errDiv2.style.cssText = "font-size:12px;color:#e05555;margin-top:6px;font-family:Courier New,monospace";
+          errDiv2.textContent = "Could not analyze: " + e2.message;
+          cardEl2.appendChild(errDiv2);
+        }
+        updateProgress();
+      }
     }
 
     setStep("step-analyze", "done");
