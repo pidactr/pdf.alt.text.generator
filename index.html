@@ -577,21 +577,33 @@ function injectAltTextsIntoPdf(pdfBuf, altTexts) {
   for (var i = 0; i < bytes.length; i++) text += String.fromCharCode(bytes[i]);
 
   // Find all image object numbers in document order
+  // Filter out tiny decorative images (both dims must be >= 50px) and deduplicate obj refs
   var imageObjNums = [];
+  var seenObjNums = {};
   var objPattern = /(\d+) 0 obj/g;
   var m;
   while ((m = objPattern.exec(text)) !== null) {
     var objNum = parseInt(m[1]);
-    var snippet = text.slice(m.index, m.index + 400);
-    if (snippet.indexOf("/Subtype /Image") !== -1 || snippet.indexOf("/Subtype/Image") !== -1) {
+    if (seenObjNums[objNum]) continue; // skip duplicate XObject definitions
+    var snippet = text.slice(m.index, m.index + 600);
+    if (snippet.indexOf("/Subtype /Image") === -1 && snippet.indexOf("/Subtype/Image") === -1) continue;
+    // Extract width and height to filter out tiny decorative elements
+    var wMatch = snippet.match(/\/Width\s+(\d+)/);
+    var hMatch = snippet.match(/\/Height\s+(\d+)/);
+    var w = wMatch ? parseInt(wMatch[1]) : 0;
+    var h = hMatch ? parseInt(hMatch[1]) : 0;
+    if (w >= 50 && h >= 50) {
       imageObjNums.push(objNum);
+      seenObjNums[objNum] = true;
     }
   }
 
-  // Build map: objNum -> altText by positional matching
+  // Build map: objNum -> altText by positional matching against filtered content images
   var altMap = {};
-  for (var i = 0; i < altTexts.length && i < imageObjNums.length; i++) {
-    if (altTexts[i]) altMap[imageObjNums[i]] = altTexts[i];
+  // Build a compact array of only the non-null alt texts to align with filtered image list
+  var altTextsCompact = altTexts.filter(function(a) { return a && a.trim().length > 0; });
+  for (var i = 0; i < altTextsCompact.length && i < imageObjNums.length; i++) {
+    altMap[imageObjNums[i]] = altTextsCompact[i];
   }
 
   // Collect injection points
