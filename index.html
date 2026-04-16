@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>PDF Alt Text Generator</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+/* PASSWORD GATE */
+#pw-gate{position:fixed;inset:0;background:#0f1117;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;gap:16px}
+#pw-gate.hidden{display:none}
+#pw-box{background:rgba(255,255,255,.03);border:1px solid #2a2d40;border-radius:14px;padding:36px 32px;text-align:center;max-width:360px;width:90%}
+#pw-title{font-size:22px;color:#c9a84c;font-family:Georgia,serif;margin-bottom:6px}
+#pw-sub{font-size:13px;color:#555570;margin-bottom:24px}
+#pw-input{width:100%;background:#0d1015;border:1px solid #2a2d40;border-radius:8px;padding:12px 14px;color:#e8e4dc;font-size:15px;outline:none;text-align:center;letter-spacing:2px;font-family:Georgia,serif;box-sizing:border-box}
+#pw-input:focus{border-color:#c9a84c}
+#pw-btn{margin-top:12px;width:100%;background:linear-gradient(135deg,#c9a84c,#e8d5a0);color:#0f1117;border:none;border-radius:12px;padding:13px;font-size:15px;font-weight:700;font-family:Georgia,serif;cursor:pointer}
+#pw-err{color:#e05555;font-size:13px;min-height:18px;margin-top:8px}
+
+/* BODY */
+body{min-height:100vh;background:linear-gradient(135deg,#0f1117 0%,#1a1d2e 50%,#0d1520 100%);font-family:Georgia,"Times New Roman",serif;color:#e8e4dc;display:flex;flex-direction:column;align-items:center;padding:36px 20px 60px}
+.eyebrow{font-size:11px;letter-spacing:4px;text-transform:uppercase;background:linear-gradient(135deg,#c9a84c,#e8d5a0);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:12px}
+h1{font-size:clamp(24px,5vw,38px);font-weight:400;line-height:1.2;letter-spacing:-.5px;margin-bottom:12px;text-align:center}
+h1 span{color:#c9a84c}
+.sub{color:#8a8a9a;font-size:14px;line-height:1.7;text-align:center;max-width:500px;margin-bottom:28px}
+
+/* UPLOAD ZONE */
+.zone{width:100%;max-width:520px;border:2px dashed #2a2d40;border-radius:16px;padding:40px 24px;text-align:center;transition:border-color .3s,background .3s;background:rgba(255,255,255,.02);margin-bottom:24px}
+.zone.drag{border-color:#c9a84c;background:rgba(201,168,76,.06)}
+.upload-icon{font-size:40px;margin-bottom:16px;opacity:.75}
+#file-input{display:block;width:100%;max-width:300px;margin:0 auto 12px;padding:14px 18px;font-size:15px;font-family:Georgia,serif;font-weight:700;color:#0f1117;background:linear-gradient(135deg,#c9a84c,#e8d5a0);border:none;border-radius:12px;cursor:pointer;box-shadow:0 4px 20px rgba(201,168,76,.35);-webkit-appearance:none;appearance:none}
+#file-input::-webkit-file-upload-button,#file-input::file-selector-button{background:transparent;border:none;color:#0f1117;font-size:15px;font-family:Georgia,serif;font-weight:700;cursor:pointer;padding:0;margin-right:8px}
+.hint{color:#555570;font-size:13px;line-height:1.6}
+
+/* SPINNER */
+.spin-wrap{display:none;flex-direction:column;align-items:center;gap:12px;padding:8px 0}
+.spin-wrap.on{display:flex}
+.spinner{width:40px;height:40px;border:3px solid #2a2d40;border-top-color:#c9a84c;border-radius:50%;animation:spin .8s linear infinite}
+.spin-label{color:#c9a84c;font-size:14px;text-align:center}
+
+/* REVIEW PANEL */
+#review-panel{display:none;width:100%;max-width:600px}
+#review-panel.on{display:block}
+.review-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:8px}
+.review-title{font-size:18px;font-weight:400;color:#c9a84c}
+.progress-text{color:#555570;font-size:13px}
+.image-card{background:rgba(255,255,255,.03);border:1px solid #2a2d40;border-radius:14px;padding:20px;margin-bottom:16px}
+.image-card.approved{border-color:#3a6640}
+.card-header{display:flex;align-items:flex-start;gap:14px;margin-bottom:14px;flex-wrap:wrap}
+.img-thumb{width:auto;height:auto;max-width:200px;max-height:260px;object-fit:contain;border-radius:10px;background:#111;border:1px solid #2a2d40;flex-shrink:0;display:block;cursor:zoom-in}
+.img-thumb-placeholder{width:144px;height:144px;border-radius:10px;background:#1a1d2e;border:1px solid #2a2d40;display:flex;align-items:center;justify-content:center;font-size:40px;flex-shrink:0}
+.card-meta{flex:1;min-width:0}
+.img-label{font-size:14px;color:#c9a84c;margin-bottom:4px}
+.img-filename{font-size:12px;color:#555570;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.alt-label{font-size:12px;color:#8a8aaa;letter-spacing:.5px;text-transform:uppercase;margin-bottom:6px}
+.alt-textarea{width:100%;background:#0d1015;border:1px solid #2a2d40;border-radius:8px;padding:10px 12px;color:#e8e4dc;font-family:Georgia,serif;font-size:14px;line-height:1.6;resize:none;outline:none;overflow:hidden;transition:border-color .2s;box-sizing:border-box}
+.alt-textarea:focus{border-color:#c9a84c}
+.card-actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.btn-approve{padding:9px 20px;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-family:Georgia,serif;font-weight:700;background:#2a4a2e;color:#5dbe6e;transition:background .2s}
+.btn-approve:hover{background:#334d36}
+.btn-approve.active{background:#1e6b26;color:#a8f0b0}
+.status-badge{font-size:12px;padding:4px 10px;border-radius:20px;font-family:Georgia,serif;margin-left:auto;align-self:center}
+.badge-approved{background:#1e3a22;color:#5dbe6e}
+.badge-pending{background:#1a1d2e;color:#555570}
+
+/* FINALIZE BAR */
+#finalize-bar{display:none;width:100%;max-width:600px;background:rgba(0,0,0,.3);border:1px solid #2a2d40;border-radius:12px;padding:18px 20px;margin-top:8px;text-align:center}
+#finalize-bar.on{display:block}
+.finalize-summary{color:#8a8aaa;font-size:13px;margin-bottom:14px}
+.finalize-summary strong{color:#e8e4dc}
+
+/* BUTTONS */
+.btn-gold{display:inline-block;background:linear-gradient(135deg,#c9a84c,#e8d5a0);color:#0f1117;border:none;border-radius:12px;padding:14px 36px;font-size:15px;font-weight:700;font-family:Georgia,serif;cursor:pointer;text-decoration:none;box-shadow:0 4px 24px rgba(201,168,76,.3)}
+.btn-upload{display:inline-block;background:linear-gradient(135deg,#c9a84c,#e8d5a0);color:#0f1117;border:none;border-radius:12px;padding:14px 36px;font-size:15px;font-weight:700;font-family:Georgia,serif;cursor:pointer;text-decoration:none;box-shadow:0 4px 24px rgba(201,168,76,.3);-webkit-tap-highlight-color:transparent;touch-action:manipulation}
+.btn-ghost{display:inline-block;background:transparent;color:#555570;border:1px solid #2a2d40;border-radius:8px;padding:10px 24px;font-size:13px;font-family:Georgia,serif;cursor:pointer;margin-top:12px}
+
+/* LIGHTBOX */
+#lightbox{display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.88);align-items:center;justify-content:center;cursor:zoom-out;padding:20px}
+#lightbox.on{display:flex}
+#lightbox img{max-width:100%;max-height:100%;object-fit:contain;border-radius:10px;box-shadow:0 8px 60px rgba(0,0,0,.8);cursor:default}
+#lightbox-close{position:fixed;top:16px;right:20px;font-size:32px;color:#e8e4dc;cursor:pointer;background:none;border:none;line-height:1;opacity:.8;z-index:1001}
+#lightbox-close:hover{opacity:1}
+
+/* HOW IT WORKS */
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;width:100%;max-width:520px;margin-top:48px}
+.card{background:rgba(255,255,255,.02);border:1px solid #1e2030;border-radius:12px;padding:16px 10px;text-align:center}
+.ci{font-size:20px;margin-bottom:6px}.ct{color:#c9a84c;font-size:10px;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px}.cd{color:#555570;font-size:11px;line-height:1.5}
+
+/* STATUS BOX */
+.status-box{width:100%;max-width:520px;border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:13px;line-height:1.6;display:none}
+.status-box.on{display:block}
+.status-box.info{background:rgba(201,168,76,.08);border:1px solid rgba(201,168,76,.3);color:#c9a84c}
+.status-box.err{background:rgba(224,85,85,.08);border:1px solid rgba(224,85,85,.3);color:#e05555}
+.status-box.ok{background:rgba(93,190,110,.08);border:1px solid rgba(93,190,110,.3);color:#5dbe6e}
+
+/* PROGRESS STEPS */
+.steps{width:100%;max-width:520px;margin-bottom:20px;display:none}
+.steps.on{display:block}
+.step{display:flex;align-items:center;gap:10px;padding:8px 0;font-size:13px;color:#555570;border-bottom:1px solid #1a1d2e}
+.step:last-child{border-bottom:none}
+.step-icon{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0}
+.step.done .step-icon{background:#1e6b26;color:#a8f0b0}
+.step.active .step-icon{background:#c9a84c;color:#0f1117}
+.step.pending .step-icon{background:#2a2d40;color:#555570}
+.step.done{color:#5dbe6e}
+.step.active{color:#c9a84c}
+.step.err .step-icon{background:#e05555;color:#fff}
+.step.err{color:#e05555}
+
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<!-- Password gate -->
+<!-- To change the password: find TOOL_PASSWORD below, update the value, upload index.html to GitHub -->
+<div id="pw-gate">
+  <div id="pw-box">
+    <div id="pw-title">PDF Alt Text Generator</div>
+    <div id="pw-sub">Enter password to continue</div>
+    <input type="password" id="pw-input" placeholder="Password" autocomplete="off"/>
+    <button id="pw-btn">Enter</button>
+    <div id="pw-err"></div>
+  </div>
+</div>
+
+<!-- Lightbox -->
+<div id="lightbox" onclick="closeLightbox()">
+  <button id="lightbox-close" onclick="closeLightbox()">&#x2715;</button>
+  <img id="lightbox-img" src="" alt="" onclick="event.stopPropagation()"/>
+</div>
+
+<div class="eyebrow">Accessibility Tools</div>
+<h1>PDF Document<br><span>Alt Text Generator</span></h1>
+<p class="sub">Upload a PDF file. Claude generates alt text for each image and graphic. Review and approve each description, then download your accessible PDF. PDF in, PDF out.</p>
+
+<!-- Process new document button — shown at top after download completes -->
+<div id="new-doc-top" style="display:none;margin-bottom:20px">
+  <button class="btn-gold" onclick="resetTool()">&#x1F4C2; Process New Document</button>
+</div>
+
+<!-- Status box for messages -->
+<div class="status-box" id="status-box"></div>
+
+<!-- Progress steps — shown during conversion -->
+<div class="steps" id="steps">
+  <div class="step pending" id="step-convert-in">
+    <div class="step-icon">1</div>
+    <span>Converting PDF to Word document</span>
+  </div>
+  <div class="step pending" id="step-analyze">
+    <div class="step-icon">2</div>
+    <span>Analyzing images with Claude AI</span>
+  </div>
+  <div class="step pending" id="step-convert-out">
+    <div class="step-icon">3</div>
+    <span>Converting accessible Word document back to PDF</span>
+  </div>
+</div>
+
+<!-- Upload zone -->
+<div class="zone" id="zone">
+  <div class="spin-wrap" id="spinner">
+    <div class="spinner"></div>
+    <div class="spin-label" id="slabel">Converting PDF...</div>
+  </div>
+  <div id="upload-ui">
+    <div class="upload-icon">&#x1F4C4;</div>
+    <label for="file-input" class="btn-upload">&#x1F4C2; Click here to upload PDF</label>
+    <input type="file" id="file-input" accept=".pdf,application/pdf" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap"/>
+    <p class="hint" style="margin-top:12px">PDF in, PDF out &mdash; conversion handled automatically</p>
+  </div>
+</div>
+
+<!-- Review panel -->
+<div id="review-panel">
+  <div class="review-header">
+    <div class="review-title">Review Alt Text</div>
+    <div class="progress-text" id="progress-text"></div>
+  </div>
+  <div id="cards-container"></div>
+</div>
+
+<!-- Finalize bar -->
+<div id="finalize-bar">
+  <div class="finalize-summary" id="finalize-summary"></div>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-bottom:10px">
+    <button class="btn-gold" onclick="approveAll()">&#x2713;&#x2713; Approve All</button>
+    <button class="btn-gold" onclick="buildDocument()">&#x2193; Apply &amp; Download PDF</button>
+  </div>
+  <button class="btn-ghost" style="margin-top:4px" onclick="resetTool()">&#x1F4C2; Process New Document</button>
+</div>
+
+<!-- How it works -->
+<div class="cards">
+  <div class="card"><div class="ci">&#x1F4C4;</div><div class="ct">Upload</div><div class="cd">Upload your PDF — conversion to Word happens automatically</div></div>
+  <div class="card"><div class="ci">&#x270F;&#xFE0F;</div><div class="ct">Review</div><div class="cd">Edit and approve the AI-generated descriptions</div></div>
+  <div class="card"><div class="ci">&#x2705;</div><div class="ct">Download</div><div class="cd">Get your accessible PDF back — no manual conversion needed</div></div>
+</div>
+
+<script>
+// ============================================================
+// ALL VARIABLES DECLARED FIRST
+// ============================================================
+// To change the password: update TOOL_PASSWORD and upload index.html to GitHub
+var TOOL_PASSWORD = "LMBLTelluride19!!";
+
+// Cloudflare Worker URL — updated after worker is deployed
+var PROXY_URL = "https://pdf-alt-text-generator.pidactr.workers.dev";
+
+var zipObj      = null;
+var rawDocXml   = null;
+var foundImages = null;
+var imageItems  = [];
+var originalFileName = "";
+
+// ============================================================
+// PASSWORD GATE
+// ============================================================
+document.addEventListener("DOMContentLoaded", function() {
+  var gate  = document.getElementById("pw-gate");
+  var input = document.getElementById("pw-input");
+  var btn   = document.getElementById("pw-btn");
+  var err   = document.getElementById("pw-err");
+
+  function tryPassword() {
+    if (input.value === TOOL_PASSWORD) {
+      gate.classList.add("hidden");
+    } else {
+      err.textContent = "Incorrect password -- please try again.";
+      input.value = "";
+      input.focus();
+    }
+  }
+
+  btn.addEventListener("click", tryPassword);
+  input.addEventListener("keydown", function(e) { if (e.key === "Enter") tryPassword(); });
+  input.focus();
+});
+
+// ============================================================
+// LIGHTBOX
+// ============================================================
+function openLightbox(src) {
+  document.getElementById("lightbox-img").src = src;
+  document.getElementById("lightbox").classList.add("on");
+  document.body.style.overflow = "hidden";
+}
+function closeLightbox() {
+  document.getElementById("lightbox").classList.remove("on");
+  document.getElementById("lightbox-img").src = "";
+  document.body.style.overflow = "";
+}
+document.addEventListener("keydown", function(e) { if (e.key === "Escape") closeLightbox(); });
+
+// ============================================================
+// STATUS BOX
+// ============================================================
+function showStatus(msg, type) {
+  var box = document.getElementById("status-box");
+  box.textContent = msg;
+  box.className = "status-box on " + (type || "info");
+}
+function hideStatus() {
+  document.getElementById("status-box").className = "status-box";
+}
+
+// ============================================================
+// PROGRESS STEPS
+// ============================================================
+function setStep(stepId, state) {
+  var el = document.getElementById(stepId);
+  if (!el) return;
+  el.className = "step " + state;
+  var icon = el.querySelector(".step-icon");
+  if (state === "done")   icon.innerHTML = "&#x2713;";
+  if (state === "active") icon.innerHTML = '<div class="spinner" style="width:14px;height:14px;border-width:2px;margin:0"></div>';
+  if (state === "err")    icon.innerHTML = "&#x2715;";
+}
+function showSteps() { document.getElementById("steps").classList.add("on"); }
+function hideSteps() { document.getElementById("steps").classList.remove("on"); }
+
+// ============================================================
+// DOM REFS
+// ============================================================
+var fileInput    = document.getElementById("file-input");
+var uploadUI     = document.getElementById("upload-ui");
+var spinnerEl    = document.getElementById("spinner");
+var slabel       = document.getElementById("slabel");
+var zone         = document.getElementById("zone");
+var reviewPanel  = document.getElementById("review-panel");
+var cardsEl      = document.getElementById("cards-container");
+var progressText = document.getElementById("progress-text");
+var finalizeBar  = document.getElementById("finalize-bar");
+var finalizeSumEl = document.getElementById("finalize-summary");
+
+// ============================================================
+// DRAG & DROP
+// ============================================================
+zone.addEventListener("dragover",  function(e) { e.preventDefault(); zone.classList.add("drag"); });
+zone.addEventListener("dragleave", function()  { zone.classList.remove("drag"); });
+zone.addEventListener("drop", function(e) {
+  e.preventDefault(); zone.classList.remove("drag");
+  var f = e.dataTransfer.files[0]; if (f) run(f);
+});
+fileInput.addEventListener("change", function() {
+  var f = fileInput.files[0]; if (f) run(f); fileInput.value = "";
+});
+
+// ============================================================
+// HELPERS
+// ============================================================
+function readBuf(file) {
+  return new Promise(function(res, rej) {
+    var r = new FileReader();
+    r.onload  = function() { res(r.result); };
+    r.onerror = function() { rej(new Error("Read failed")); };
+    r.readAsArrayBuffer(file);
+  });
+}
+
+function bufToB64(buf) {
+  var s = ""; var b = new Uint8Array(buf);
+  for (var i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+  return btoa(s);
+}
+
+function mimeFor(ct) {
+  if (!ct) return "image/png";
+  if (ct.indexOf("jpeg") !== -1 || ct.indexOf("jpg") !== -1) return "image/jpeg";
+  if (ct.indexOf("png")  !== -1) return "image/png";
+  if (ct.indexOf("gif")  !== -1) return "image/gif";
+  if (ct.indexOf("webp") !== -1) return "image/webp";
+  return "image/png";
+}
+
+function escXml(s) {
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&apos;");
+}
+
+function escHtml(s) {
+  if (!s) return "";
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+function setBusy(on, label) {
+  spinnerEl.classList.toggle("on", on);
+  uploadUI.style.display = on ? "none" : "block";
+  if (label) slabel.textContent = label;
+}
+
+// ============================================================
+// THUMBNAIL
+// ============================================================
+function makeThumbnail(dataUrl) {
+  return new Promise(function(res) {
+    var img = new Image();
+    img.onload = function() {
+      var MAX = 400;
+      var scale = Math.min(1, MAX / Math.max(img.naturalWidth || img.width, img.naturalHeight || img.height));
+      var w = Math.round((img.naturalWidth  || img.width)  * scale);
+      var h = Math.round((img.naturalHeight || img.height) * scale);
+      var canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+      res(canvas.toDataURL("image/jpeg", 0.88));
+    };
+    img.onerror = function() { res(dataUrl); };
+    img.style.imageOrientation = "from-image";
+    img.src = dataUrl;
+  });
+}
+
+// ============================================================
+// AUTO-RESIZE TEXTAREAS
+// ============================================================
+function autoResize(ta) { ta.style.height = "auto"; ta.style.height = ta.scrollHeight + "px"; }
+function autoResizeAll() { document.querySelectorAll(".alt-textarea").forEach(autoResize); }
+
+// ============================================================
+// STEP 1: PDF -> DOCX via Cloudflare Worker + Adobe API
+// ============================================================
+async function convertPdfToDocx(pdfArrayBuffer) {
+  var b64 = bufToB64(pdfArrayBuffer);
+  var res = await fetch(PROXY_URL + "/convert-to-docx", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({pdf: b64})
+  });
+  if (!res.ok) {
+    var errText = await res.text();
+    throw new Error("PDF to Word conversion failed: " + errText);
+  }
+  var data = await res.json();
+  // Return as ArrayBuffer
+  var binary = atob(data.docx);
+  var bytes = new Uint8Array(binary.length);
+  for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+// ============================================================
+// STEP 3: DOCX -> PDF via Cloudflare Worker + Adobe API
+// ============================================================
+async function convertDocxToPdf(docxArrayBuffer) {
+  var b64 = bufToB64(docxArrayBuffer);
+  var res = await fetch(PROXY_URL + "/convert-to-pdf", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({docx: b64})
+  });
+  if (!res.ok) {
+    var errText = await res.text();
+    throw new Error("Word to PDF conversion failed: " + errText);
+  }
+  var data = await res.json();
+  var binary = atob(data.pdf);
+  var bytes = new Uint8Array(binary.length);
+  for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+// ============================================================
+// STEP 2: CLAUDE API — via Cloudflare proxy
+// ============================================================
+async function describeImage(b64, mime) {
+  var res = await fetch(PROXY_URL, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 120,
+      messages: [{role: "user", content: [
+        {type: "image", source: {type: "base64", media_type: mime, data: b64}},
+        {type: "text",  text: "Write a single sentence of alt text for this image for use in an accessibility-remediated PDF document. Be specific and descriptive. Do not start with 'Image of' or 'Picture of'. Output the sentence only, nothing else."}
+      ]}]
+    })
+  });
+  if (!res.ok) throw new Error("API " + res.status + ": " + await res.text());
+  var d = await res.json();
+  return d.content.map(function(b) { return b.text || ""; }).join("").trim();
+}
+
+// ============================================================
+// DOCX HELPERS — identical to Word tool
+// ============================================================
+function findImageParas(docXml) {
+  var found = [];
+  var drawingRe = /<w:drawing>[\s\S]*?<\/w:drawing>/g;
+  var m;
+  while ((m = drawingRe.exec(docXml)) !== null) {
+    var drawing = m[0];
+    var ridMatch = drawing.match(/r:embed="(rId\d+)"/);
+    if (ridMatch) {
+      found.push({rId: ridMatch[1], pos: m.index, len: drawing.length});
+    }
+  }
+  return {parts: null, found: found};
+}
+
+function stripAltText(xml) {
+  xml = xml.replace(/(wp:docPr[^>]*?)\s+descr="[^"]*"/g, "$1");
+  xml = xml.replace(/(wp:docPr[^>]*?)\s+title="[^"]*"/g, "$1");
+  return xml;
+}
+
+function setAltTextForRid(xml, rId, desc) {
+  var e = escXml(desc);
+  return xml.replace(/<w:drawing>[\s\S]*?<\/w:drawing>/g, function(drawing) {
+    if (drawing.indexOf('r:embed="' + rId + '"') === -1) return drawing;
+    if (/wp:docPr[^>]*\sdescr=/.test(drawing)) {
+      return drawing.replace(/(wp:docPr[^>]*\s)descr="[^"]*"/, '$1descr="' + e + '"');
+    }
+    if (/<wp:docPr\s/.test(drawing)) {
+      return drawing.replace(/(<wp:docPr\s)/, '$1descr="' + e + '" ');
+    }
+    if (/<wp:docPr\//.test(drawing)) {
+      return drawing.replace(/(<wp:docPr)(\/)/, '$1 descr="' + e + '"$2');
+    }
+    if (/<wp:docPr id=/.test(drawing)) {
+      return drawing.replace(/(<wp:docPr)(\s)/, '$1 descr="' + e + '"$2');
+    }
+    return drawing;
+  });
+}
+
+function applyAltTexts(approvedMap) {
+  var xml = rawDocXml;
+  xml = stripAltText(xml);
+  var rIds = Object.keys(approvedMap);
+  for (var i = 0; i < rIds.length; i++) {
+    var rId  = rIds[i];
+    var alt  = approvedMap[rId];
+    if (typeof alt === "string" && alt.trim().length > 0) {
+      xml = setAltTextForRid(xml, rId, alt.trim());
+    }
+  }
+  return xml;
+}
+
+// ============================================================
+// REVIEW UI
+// ============================================================
+function approveAll() {
+  imageItems.forEach(function(item) {
+    var ta = document.getElementById("ta-" + item.rId);
+    if (ta && ta.value.trim().length > 0) {
+      item.altText = ta.value.trim();
+      item.status  = "approved";
+    } else if (item.altText && item.altText.trim().length > 0) {
+      item.status = "approved";
+    }
+    var card = document.getElementById("card-" + item.rId);
+    if (card) { renderCard(item, card); var ta2 = document.getElementById("ta-" + item.rId); if (ta2) autoResize(ta2); }
+  });
+  updateProgress();
+}
+
+function updateProgress() {
+  var approved = imageItems.filter(function(i) { return i.status === "approved"; }).length;
+  var pending  = imageItems.filter(function(i) { return i.status === "pending";  }).length;
+  var total    = imageItems.length;
+  progressText.textContent = approved + " approved / " + pending + " pending";
+  var summary = "<strong>" + approved + " of " + total + "</strong> image" + (total !== 1 ? "s" : "") + " will get alt text.";
+  if (approved === 0) summary += ' <span style="color:#8a8aaa">Approve at least one image to add alt text.</span>';
+  if (pending  >  0) summary += ' <span style="color:#e0a040">' + pending + ' pending -- these will not get alt text.</span>';
+  finalizeSumEl.innerHTML = summary;
+  if (total > 0) finalizeBar.classList.add("on");
+}
+
+function renderCard(item, cardEl) {
+  var badge = item.status === "approved"
+    ? '<span class="status-badge badge-approved">&#x2713; Approved -- alt text will be added</span>'
+    : '<span class="status-badge badge-pending">Pending -- alt text will NOT be added</span>';
+
+  cardEl.className = "image-card" + (item.status === "approved" ? " approved" : "");
+  cardEl.innerHTML =
+    '<div class="card-header">' +
+      (item.thumbUrl
+        ? '<img class="img-thumb" src="' + item.thumbUrl + '" alt="Tap to enlarge" title="Click to enlarge" style="cursor:zoom-in"/>'
+        : '<div class="img-thumb-placeholder">&#x1F5BC;&#xFE0F;</div>') +
+      '<div class="card-meta">' +
+        '<div class="img-label">Image ' + item.num + '</div>' +
+        '<div class="img-filename">' + escHtml(item.filename) + '</div>' +
+      '</div>' + badge +
+    '</div>' +
+    '<div class="alt-label">Alt Text</div>' +
+    '<textarea class="alt-textarea" id="ta-' + item.rId + '" oninput="autoResize(this)">' + escHtml(item.altText || "") + '</textarea>' +
+    '<div class="card-actions">' +
+      '<button class="btn-approve' + (item.status === "approved" ? " active" : "") + '">' +
+        (item.status === "approved" ? "&#x2713; Approved" : "Approve") + '</button>' +
+    '</div>';
+
+  var img = cardEl.querySelector(".img-thumb");
+  if (img) {
+    (function(url) { img.addEventListener("click", function() { openLightbox(url); }); })(item.fullUrl || item.thumbUrl);
+  }
+
+  var approveBtn = cardEl.querySelector(".btn-approve");
+  if (approveBtn) {
+    (function(rid) { approveBtn.addEventListener("click", function() { approveItem(rid); }); })(item.rId);
+  }
+}
+
+function approveItem(rId) {
+  var item = imageItems.find(function(i) { return i.rId === rId; }); if (!item) return;
+  var ta = document.getElementById("ta-" + rId); if (ta) item.altText = ta.value.trim();
+  item.status = (item.status === "approved") ? "pending" : "approved";
+  var card = document.getElementById("card-" + rId);
+  if (card) { renderCard(item, card); var ta2 = document.getElementById("ta-" + rId); if (ta2) autoResize(ta2); }
+  updateProgress();
+}
+
+// ============================================================
+// BUILD DOCUMENT — applies alt texts then converts back to PDF
+// ============================================================
+async function buildDocument() {
+  var overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:500;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px";
+  overlay.innerHTML = '<div class="spinner" style="width:48px;height:48px;border-width:4px"></div><div style="color:#c9a84c;font-size:15px;font-family:Georgia,serif" id="overlay-label">Applying alt text...</div>';
+  document.body.appendChild(overlay);
+
+  try {
+    // Apply alt texts to DOCX XML
+    var approvedMap = {};
+    imageItems.forEach(function(item) {
+      if (item.status === "approved" && typeof item.altText === "string" && item.altText.trim().length > 0)
+        approvedMap[item.rId] = item.altText.trim();
+    });
+
+    var patchedXml = applyAltTexts(approvedMap);
+    zipObj.file("word/document.xml", patchedXml);
+
+    // Generate accessible DOCX
+    document.getElementById("overlay-label").textContent = "Building accessible Word document...";
+    var docxB64 = await zipObj.generateAsync({type: "base64", compression: "DEFLATE"});
+    var docxBinary = atob(docxB64);
+    var docxBytes = new Uint8Array(docxBinary.length);
+    for (var i = 0; i < docxBinary.length; i++) docxBytes[i] = docxBinary.charCodeAt(i);
+
+    // Convert DOCX -> PDF via worker
+    document.getElementById("overlay-label").textContent = "Converting to PDF...";
+    setStep("step-convert-out", "active");
+    var pdfBuf = await convertDocxToPdf(docxBytes.buffer);
+    setStep("step-convert-out", "done");
+
+    // Download the PDF
+    var blob = new Blob([pdfBuf], {type: "application/pdf"});
+    var url  = URL.createObjectURL(blob);
+    var outName = originalFileName.replace(/\.pdf$/i, "") + "_accessible.pdf";
+    var a = document.createElement("a");
+    a.href = url; a.download = outName;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    document.body.removeChild(overlay);
+    document.getElementById("new-doc-top").style.display = "block";
+    window.scrollTo({top: 0, behavior: "smooth"});
+
+    showStatus("Done! Your accessible PDF has been downloaded.", "ok");
+
+    var btn = finalizeBar.querySelector(".btn-gold:last-of-type");
+    if (btn) {
+      var orig = btn.textContent;
+      btn.textContent = "Downloaded!";
+      btn.style.background = "linear-gradient(135deg,#2a6e30,#4caf58)";
+      setTimeout(function() { btn.textContent = orig; btn.style.background = ""; }, 3000);
+    }
+
+  } catch(e) {
+    document.body.removeChild(overlay);
+    setStep("step-convert-out", "err");
+    showStatus("Error creating PDF: " + e.message, "err");
+  }
+}
+
+// ============================================================
+// RESET
+// ============================================================
+function resetTool() {
+  zipObj = null; rawDocXml = null; foundImages = null; imageItems = [];
+  originalFileName = "";
+  cardsEl.innerHTML = "";
+  reviewPanel.classList.remove("on");
+  finalizeBar.classList.remove("on");
+  hideStatus();
+  hideSteps();
+  document.getElementById("new-doc-top").style.display = "none";
+  zone.style.display = "";
+  setBusy(false);
+  // Reset step indicators
+  ["step-convert-in","step-analyze","step-convert-out"].forEach(function(id) { setStep(id, "pending"); });
+  window.scrollTo({top: 0, behavior: "smooth"});
+}
+
+// ============================================================
+// MAIN — process uploaded PDF
+// ============================================================
+async function run(file) {
+  var isPdf = file.name.match(/\.pdf$/i) || file.type === "application/pdf";
+  if (!isPdf) { alert("Please choose a PDF file."); return; }
+
+  originalFileName = file.name;
+  imageItems = []; cardsEl.innerHTML = "";
+  reviewPanel.classList.remove("on");
+  finalizeBar.classList.remove("on");
+  hideStatus();
+
+  showSteps();
+  setBusy(true, "Reading PDF...");
+
+  try {
+    // Step 1: PDF -> DOCX
+    setStep("step-convert-in", "active");
+    showStatus("Converting PDF to Word document. This may take 20-30 seconds...", "info");
+    slabel.textContent = "Converting PDF to Word document...";
+
+    var pdfBuf  = await readBuf(file);
+    var docxBuf = await convertPdfToDocx(pdfBuf);
+    setStep("step-convert-in", "done");
+    showStatus("Conversion complete. Scanning for images...", "info");
+
+    // Step 2: Process DOCX exactly like the Word tool
+    setStep("step-analyze", "active");
+
+    zipObj = await JSZip.loadAsync(docxBuf);
+
+    // rId to media path
+    var relsXml  = await zipObj.file("word/_rels/document.xml.rels").async("text");
+    var rIdToPath = {};
+    var relRe = /Id="(rId\d+)"[^>]*Type="[^"]*\/image"[^>]*Target="([^"]+)"/g;
+    var m;
+    while ((m = relRe.exec(relsXml)) !== null) rIdToPath[m[1]] = "word/" + m[2];
+
+    // Content types
+    var ctXml = await zipObj.file("[Content_Types].xml").async("text");
+    var extToMime = {};
+    var ctRe = /Extension="(\w+)"[^/]*ContentType="([^"]+)"/g;
+    while ((m = ctRe.exec(ctXml)) !== null) extToMime[m[1].toLowerCase()] = m[2];
+
+    // Find images
+    rawDocXml   = await zipObj.file("word/document.xml").async("text");
+    var r       = findImageParas(rawDocXml);
+    foundImages = r.found.filter(function(f) { return rIdToPath[f.rId]; });
+
+    if (foundImages.length === 0) {
+      setBusy(false);
+      setStep("step-analyze", "err");
+      showStatus("No images or graphics found in this PDF after conversion. The document may contain only text.", "err");
+      hideSteps();
+      zone.style.display = "";
+      return;
+    }
+
+    showStatus("Found " + foundImages.length + " image(s). Generating alt text with Claude AI...", "info");
+
+    // Hide upload zone, show review panel
+    zone.style.display = "none";
+    reviewPanel.classList.add("on");
+    setBusy(false);
+
+    // Analyze each image with Claude
+    for (var i = 0; i < foundImages.length; i++) {
+      var rId      = foundImages[i].rId;
+      var path     = rIdToPath[rId];
+      var filename = path ? path.split("/").pop() : "unknown";
+      var ext      = filename.split(".").pop().toLowerCase();
+      var mime     = mimeFor(extToMime[ext]);
+      var item     = {rId: rId, filename: filename, num: i + 1, thumbUrl: null, fullUrl: null, altText: "", status: "pending"};
+
+      imageItems.push(item);
+      var cardEl = document.createElement("div"); cardEl.id = "card-" + rId; cardsEl.appendChild(cardEl);
+      renderCard(item, cardEl);
+
+      var ta = document.getElementById("ta-" + rId);
+      if (ta) { ta.value = "Generating..."; ta.disabled = true; autoResize(ta); }
+
+      slabel.textContent = "Analyzing image " + (i + 1) + " of " + foundImages.length + "...";
+      progressText.textContent = "Analyzing " + (i + 1) + " of " + foundImages.length + "...";
+
+      try {
+        var imgBuf  = await zipObj.file(path).async("arraybuffer");
+        var b64     = bufToB64(imgBuf);
+        var rawUrl  = "data:" + mime + ";base64," + b64;
+        item.fullUrl  = rawUrl;
+        item.thumbUrl = await makeThumbnail(rawUrl);
+
+        var alt = await describeImage(b64, mime);
+        item.altText = alt; item.status = "pending";
+        if (ta) { ta.value = alt; ta.disabled = false; autoResize(ta); }
+        renderCard(item, cardEl); autoResizeAll();
+      } catch(e) {
+        item.altText = ""; item.status = "pending";
+        if (ta) { ta.value = ""; ta.disabled = false; }
+        renderCard(item, cardEl);
+        var errDiv = document.createElement("div");
+        errDiv.style.cssText = "font-size:12px;color:#e05555;margin-top:6px;font-family:Courier New,monospace";
+        errDiv.textContent = "Could not analyze: " + e.message;
+        cardEl.appendChild(errDiv);
+      }
+      updateProgress();
+    }
+
+    setStep("step-analyze", "done");
+    showStatus("Alt text generated. Review each description below, then click Approve All or approve individually.", "ok");
+    updateProgress();
+
+  } catch(e) {
+    setBusy(false);
+    zone.style.display = "";
+    setStep("step-convert-in", "err");
+    showStatus("Error: " + e.message, "err");
+  }
+}
+</script>
+</body>
+</html>
