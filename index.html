@@ -380,47 +380,114 @@ function autoResize(ta) { ta.style.height = "auto"; ta.style.height = ta.scrollH
 function autoResizeAll() { document.querySelectorAll(".alt-textarea").forEach(autoResize); }
 
 // ============================================================
-// STEP 1: PDF -> DOCX via Cloudflare Worker + Adobe API
+// ADOBE API HELPERS — browser talks directly to Adobe for file transfers
+// Worker only handles tokens and job management (small JSON, no file bytes)
 // ============================================================
-async function convertPdfToDocx(pdfArrayBuffer) {
-  var b64 = bufToB64(pdfArrayBuffer);
-  var res = await fetch(PROXY_URL + "/convert-to-docx", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({pdf: b64})
+
+// Get Adobe access token via worker (keeps credentials secure)
+async function adobeGetToken() {
+  var res = await fetch(PROXY_URL + "/get-adobe-token", {method: "POST", headers: {"Content-Type": "application/json"}});
+  if (!res.ok) throw new Error("Failed to get Adobe token: " + await res.text());
+  return await res.json(); // { token, clientId }
+}
+
+// Get a pre-signed upload URL from Adobe via worker
+async function adobeInitUpload(token, clientId, mediaType) {
+  var res = await fetch(PROXY_URL + "/init-upload", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({token: token, clientId: clientId, mediaType: mediaType})
   });
-  if (!res.ok) {
-    var errText = await res.text();
-    throw new Error("PDF to Word conversion failed: " + errText);
+  if (!res.ok) throw new Error("Failed to init upload: " + await res.text());
+  return await res.json(); // { uploadUri, assetID }
+}
+
+// Upload file bytes directly to Adobe's pre-signed URL (no worker involved)
+async function adobeUploadFile(uploadUri, fileBytes, mediaType) {
+  var res = await fetch(uploadUri, {
+    method: "PUT", headers: {"Content-Type": mediaType}, body: fileBytes
+  });
+  if (!res.ok) throw new Error("Adobe file upload failed: " + res.status);
+}
+
+// Start PDF -> DOCX export job via worker
+async function adobeStartExport(token, clientId, assetID) {
+  var res = await fetch(PROXY_URL + "/start-export", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({token: token, clientId: clientId, assetID: assetID})
+  });
+  if (!res.ok) throw new Error("Failed to start export: " + await res.text());
+  return await res.json(); // { jobLocation }
+}
+
+// Start DOCX -> PDF create job via worker
+async function adobeStartCreatePdf(token, clientId, assetID) {
+  var res = await fetch(PROXY_URL + "/start-createpdf", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({token: token, clientId: clientId, assetID: assetID})
+  });
+  if (!res.ok) throw new Error("Failed to start createpdf: " + await res.text());
+  return await res.json(); // { jobLocation }
+}
+
+// Poll job until done
+async function adobePollUntilDone(token, clientId, jobLocation) {
+  for (var i = 0; i < 30; i++) {
+    await new Promise(function(r){ setTimeout(r, 2000); });
+    var res = await fetch(PROXY_URL + "/poll-job", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({token: token, clientId: clientId, jobLocation: jobLocation})
+    });
+    if (!res.ok) throw new Error("Poll failed: " + await res.text());
+    var data = await res.json();
+    if (data.status === "done")        return data.assetID;
+    if (data.status !== "in_progress") throw new Error("Job failed: " + JSON.stringify(data));
   }
+  throw new Error("Adobe job timed out");
+}
+
+// Get download URL for a completed asset via worker, then download directly
+async function adobeDownloadAsset(token, clientId, assetID) {
+  var res = await fetch(PROXY_URL + "/get-download-url", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({token: token, clientId: clientId, assetID: assetID})
+  });
+  if (!res.ok) throw new Error("Failed to get download URL: " + await res.text());
   var data = await res.json();
-  // Return as ArrayBuffer
-  var binary = atob(data.docx);
-  var bytes = new Uint8Array(binary.length);
-  for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes.buffer;
+  // Download directly from Adobe's pre-signed URL
+  var dlRes = await fetch(data.downloadUri);
+  if (!dlRes.ok) throw new Error("File download failed: " + dlRes.status);
+  return await dlRes.arrayBuffer();
 }
 
 // ============================================================
-// STEP 3: DOCX -> PDF via Cloudflare Worker + Adobe API
+// STEP 1: PDF -> DOCX
+// ============================================================
+async function convertPdfToDocx(pdfArrayBuffer) {
+  var auth = await adobeGetToken();
+  var mimeType = "application/pdf";
+  var upload = await adobeInitUpload(auth.token, auth.clientId, mimeType);
+  await adobeUploadFile(upload.uploadUri, pdfArrayBuffer, mimeType);
+  var job = await adobeStartExport(auth.token, auth.clientId, upload.assetID);
+  var resultAssetID = await adobePollUntilDone(auth.token, auth.clientId, job.jobLocation);
+  return await adobeDownloadAsset(auth.token, auth.clientId, resultAssetID);
+}
+
+// ============================================================
+// STEP 3: DOCX -> PDF
 // ============================================================
 async function convertDocxToPdf(docxArrayBuffer, altTexts) {
-  var b64 = bufToB64(docxArrayBuffer);
-  var res = await fetch(PROXY_URL + "/convert-to-pdf", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    // Send approved alt texts alongside the DOCX so worker can inject them into the final PDF
-    body: JSON.stringify({docx: b64, altTexts: altTexts || []})
-  });
-  if (!res.ok) {
-    var errText = await res.text();
-    throw new Error("Word to PDF conversion failed: " + errText);
+  var auth = await adobeGetToken();
+  var mimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  var upload = await adobeInitUpload(auth.token, auth.clientId, mimeType);
+  await adobeUploadFile(upload.uploadUri, docxArrayBuffer, mimeType);
+  var job = await adobeStartCreatePdf(auth.token, auth.clientId, upload.assetID);
+  var resultAssetID = await adobePollUntilDone(auth.token, auth.clientId, job.jobLocation);
+  var pdfBuf = await adobeDownloadAsset(auth.token, auth.clientId, resultAssetID);
+  // Inject alt texts directly into PDF bytes after conversion
+  if (altTexts && altTexts.some(function(a){ return a; })) {
+    pdfBuf = injectAltTextsIntoPdf(pdfBuf, altTexts);
   }
-  var data = await res.json();
-  var binary = atob(data.pdf);
-  var bytes = new Uint8Array(binary.length);
-  for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes.buffer;
+  return pdfBuf;
 }
 
 // ============================================================
@@ -499,6 +566,63 @@ function applyAltTexts(approvedMap) {
     }
   }
   return xml;
+}
+
+// ============================================================
+// INJECT ALT TEXTS INTO PDF BYTES (client-side)
+// ============================================================
+function injectAltTextsIntoPdf(pdfBuf, altTexts) {
+  var bytes = new Uint8Array(pdfBuf);
+  var text = "";
+  for (var i = 0; i < bytes.length; i++) text += String.fromCharCode(bytes[i]);
+
+  // Find all image object numbers in document order
+  var imageObjNums = [];
+  var objPattern = /(\d+) 0 obj/g;
+  var m;
+  while ((m = objPattern.exec(text)) !== null) {
+    var objNum = parseInt(m[1]);
+    var snippet = text.slice(m.index, m.index + 400);
+    if (snippet.indexOf("/Subtype /Image") !== -1 || snippet.indexOf("/Subtype/Image") !== -1) {
+      imageObjNums.push(objNum);
+    }
+  }
+
+  // Build map: objNum -> altText by positional matching
+  var altMap = {};
+  for (var i = 0; i < altTexts.length && i < imageObjNums.length; i++) {
+    if (altTexts[i]) altMap[imageObjNums[i]] = altTexts[i];
+  }
+
+  // Collect injection points
+  var injections = [];
+  var objNums = Object.keys(altMap);
+  for (var k = 0; k < objNums.length; k++) {
+    var objNum = parseInt(objNums[k]);
+    var altText = altMap[objNums[k]];
+    var searchStr = objNum + " 0 obj";
+    var objIdx = text.indexOf(searchStr);
+    if (objIdx === -1) continue;
+    var objSnippet = text.slice(objIdx, objIdx + 500);
+    if (objSnippet.indexOf("/Subtype /Image") === -1 && objSnippet.indexOf("/Subtype/Image") === -1) continue;
+    var gtgt = objSnippet.indexOf(">>");
+    if (gtgt === -1) continue;
+    var escaped = altText.split("\").join("\\").split("(").join("\(").split(")").join("\)");
+    injections.push({pos: objIdx + gtgt, text: "
+/Alt (" + escaped + ")"});
+  }
+
+  if (injections.length === 0) return pdfBuf;
+
+  injections.sort(function(a, b){ return b.pos - a.pos; });
+  for (var j = 0; j < injections.length; j++) {
+    var inj = injections[j];
+    text = text.slice(0, inj.pos) + inj.text + text.slice(inj.pos);
+  }
+
+  var result = new Uint8Array(text.length);
+  for (var i = 0; i < text.length; i++) result[i] = text.charCodeAt(i) & 0xff;
+  return result.buffer;
 }
 
 // ============================================================
