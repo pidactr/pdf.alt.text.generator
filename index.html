@@ -604,11 +604,16 @@ function injectAltTextsIntoPdf(pdfBuf, altTexts) {
     }
   }
 
-  // Build map: objNum -> altText — strip nulls first so index alignment is clean
+  // Build map: objNum -> altText
+  // IMPORTANT: altTexts is a sparse array (nulls for non-approved images) — preserve positions,
+  // only skip nulls/empties during mapping so PDF image index aligns with DOCX image index.
   var altMap = {};
-  var altTextsCompact = altTexts.filter(function(a) { return a && a.trim().length > 0; });
-  for (var i = 0; i < altTextsCompact.length && i < imageObjNums.length; i++) {
-    altMap[imageObjNums[i]] = altTextsCompact[i];
+  var pdfIdx = 0; // tracks position in imageObjNums
+  for (var i = 0; i < altTexts.length && pdfIdx < imageObjNums.length; i++) {
+    if (altTexts[i] && altTexts[i].trim().length > 0) {
+      altMap[imageObjNums[pdfIdx]] = altTexts[i].trim();
+    }
+    pdfIdx++;
   }
 
   // Collect injection points
