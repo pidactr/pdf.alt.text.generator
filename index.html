@@ -475,7 +475,7 @@ async function convertPdfToDocx(pdfArrayBuffer) {
 // ============================================================
 // STEP 3: DOCX -> PDF
 // ============================================================
-async function convertDocxToPdf(docxArrayBuffer, altTexts) {
+async function convertDocxToPdf(docxArrayBuffer, altTextItems) {
   var auth = await adobeGetToken();
   var mimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
   var upload = await adobeInitUpload(auth.token, auth.clientId, mimeType);
@@ -483,9 +483,10 @@ async function convertDocxToPdf(docxArrayBuffer, altTexts) {
   var job = await adobeStartCreatePdf(auth.token, auth.clientId, upload.assetID);
   var resultAssetID = await adobePollUntilDone(auth.token, auth.clientId, job.jobLocation);
   var pdfBuf = await adobeDownloadAsset(auth.token, auth.clientId, resultAssetID);
-  // Inject alt texts directly into PDF bytes after conversion
-  if (altTexts && altTexts.some(function(a){ return a; })) {
-    pdfBuf = injectAltTextsIntoPdf(pdfBuf, altTexts);
+  // Inject alt texts using hash-matching: each item has { altText, imgBytes }
+  var hasAny = altTextItems && altTextItems.some(function(a){ return a && a.altText; });
+  if (hasAny) {
+    pdfBuf = await injectAltTextsIntoPdf(pdfBuf, altTextItems);
   }
   return pdfBuf;
 }
@@ -569,54 +570,126 @@ function applyAltTexts(approvedMap) {
 }
 
 // ============================================================
-// INJECT ALT TEXTS INTO PDF BYTES (client-side)
+// INJECT ALT TEXTS INTO PDF BYTES — hash-based matching
+// altTextItems: array of { altText: string, imgBytes: Uint8Array|null }
+// Strategy:
+//   1. Hash each DOCX image's raw bytes
+//   2. Extract and hash each PDF image XObject's compressed stream bytes
+//   3. Match on hash — exact byte-for-byte match means same image
+//   4. Fall back to positional matching for any unmatched items
 // ============================================================
-function injectAltTextsIntoPdf(pdfBuf, altTexts) {
+async function injectAltTextsIntoPdf(pdfBuf, altTextItems) {
   var bytes = new Uint8Array(pdfBuf);
   var text = "";
   for (var i = 0; i < bytes.length; i++) text += String.fromCharCode(bytes[i]);
 
-  // Find all image object numbers in document order
-  // - Cap snippet at next "endobj" to avoid reading into the next object
-  // - Require /ColorSpace to exclude alpha mask (SMask) objects
-  // - Require both dimensions >= 50px to exclude tiny decorative elements
-  // - Deduplicate object numbers
-  var imageObjNums = [];
-  var seenObjNums = {};
-  var objPattern = /(\d+) 0 obj/g;
-  var m;
-  while ((m = objPattern.exec(text)) !== null) {
-    var objNum = parseInt(m[1]);
-    if (seenObjNums[objNum]) continue;
-    var rawSnippet = text.slice(m.index, m.index + 800);
-    var endobjIdx = rawSnippet.indexOf("endobj");
-    var snippet = endobjIdx !== -1 ? rawSnippet.slice(0, endobjIdx) : rawSnippet.slice(0, 600);
-    if (snippet.indexOf("/Subtype /Image") === -1 && snippet.indexOf("/Subtype/Image") === -1) continue;
-    if (snippet.indexOf("/ColorSpace") === -1) continue; // skip objects with no colorspace
-    if (snippet.indexOf("/DeviceGray") !== -1 || snippet.indexOf("/DeviceGrey") !== -1) continue; // skip alpha masks
-    var wMatch = snippet.match(/\/Width\s+(\d+)/);
-    var hMatch = snippet.match(/\/Height\s+(\d+)/);
-    var w = wMatch ? parseInt(wMatch[1]) : 0;
-    var h = hMatch ? parseInt(hMatch[1]) : 0;
-    if (w >= 50 && h >= 50) {
-      imageObjNums.push(objNum);
-      seenObjNums[objNum] = true;
+  // Fast sampled hash: captures length + distributed byte values
+  function quickHash(data) {
+    if (!data || data.length === 0) return "empty_0";
+    var step = Math.max(1, Math.floor(data.length / 512));
+    var h = data.length;
+    for (var i = 0; i < data.length; i += step) {
+      h = ((h * 31) + data[i]) >>> 0;
+    }
+    return h.toString(16) + "_" + data.length;
+  }
+
+  // Find all content image XObjects: DeviceRGB, >= 50x50px
+  function findPdfImageObjects() {
+    var images = [];
+    var seen = {};
+    var objPattern = /(\d+) 0 obj/g;
+    var m;
+    while ((m = objPattern.exec(text)) !== null) {
+      var objNum = parseInt(m[1]);
+      if (seen[objNum]) continue;
+      var rawSnippet = text.slice(m.index, m.index + 800);
+      var endobjIdx = rawSnippet.indexOf("endobj");
+      var snippet = endobjIdx !== -1 ? rawSnippet.slice(0, endobjIdx) : rawSnippet.slice(0, 600);
+      if (snippet.indexOf("/Subtype /Image") === -1 && snippet.indexOf("/Subtype/Image") === -1) continue;
+      if (snippet.indexOf("/ColorSpace") === -1) continue;
+      if (snippet.indexOf("/DeviceGray") !== -1 || snippet.indexOf("/DeviceGrey") !== -1) continue;
+      var wMatch = snippet.match(/\/Width\s+(\d+)/);
+      var hMatch = snippet.match(/\/Height\s+(\d+)/);
+      var w = wMatch ? parseInt(wMatch[1]) : 0;
+      var h = hMatch ? parseInt(hMatch[1]) : 0;
+      if (w < 50 || h < 50) continue;
+      seen[objNum] = true;
+      // Locate stream start
+      var streamKeyword = "stream";
+      var streamOffset = rawSnippet.indexOf(streamKeyword);
+      var streamStart = -1, streamLen = -1;
+      if (streamOffset !== -1) {
+        var afterStream = m.index + streamOffset + streamKeyword.length;
+        if (text[afterStream] === "\r") afterStream++;
+        if (text[afterStream] === "\n") afterStream++;
+        streamStart = afterStream;
+        var lenMatch = snippet.match(/\/Length\s+(\d+)/);
+        streamLen = lenMatch ? parseInt(lenMatch[1]) : -1;
+      }
+      images.push({ objNum: objNum, w: w, h: h, streamStart: streamStart, streamLen: streamLen });
+    }
+    return images;
+  }
+
+  // Extract raw compressed stream bytes from a PDF image object
+  function getPdfStreamBytes(img) {
+    if (img.streamStart === -1) return null;
+    var len = img.streamLen;
+    if (len > 0 && len < 20 * 1024 * 1024) {
+      var result = new Uint8Array(len);
+      for (var i = 0; i < len; i++) result[i] = text.charCodeAt(img.streamStart + i) & 0xff;
+      return result;
+    }
+    var endIdx = text.indexOf("endstream", img.streamStart);
+    if (endIdx === -1) return null;
+    var l = endIdx - img.streamStart;
+    var result = new Uint8Array(l);
+    for (var i = 0; i < l; i++) result[i] = text.charCodeAt(img.streamStart + i) & 0xff;
+    return result;
+  }
+
+  var pdfImages = findPdfImageObjects();
+
+  // Build PDF hash -> objNum map
+  var pdfHashToObjNum = {};
+  for (var i = 0; i < pdfImages.length; i++) {
+    var streamBytes = getPdfStreamBytes(pdfImages[i]);
+    if (streamBytes) {
+      pdfHashToObjNum[quickHash(streamBytes)] = pdfImages[i].objNum;
     }
   }
 
-  // Build map: objNum -> altText
-  // IMPORTANT: altTexts is a sparse array (nulls for non-approved images) — preserve positions,
-  // only skip nulls/empties during mapping so PDF image index aligns with DOCX image index.
+  // Match DOCX images to PDF objects
   var altMap = {};
-  var pdfIdx = 0; // tracks position in imageObjNums
-  for (var i = 0; i < altTexts.length && pdfIdx < imageObjNums.length; i++) {
-    if (altTexts[i] && altTexts[i].trim().length > 0) {
-      altMap[imageObjNums[pdfIdx]] = altTexts[i].trim();
+  var usedObjNums = {};
+  var unmatched = [];
+
+  for (var i = 0; i < altTextItems.length; i++) {
+    var item = altTextItems[i];
+    if (!item || !item.altText || !item.altText.trim()) continue;
+    var matched = false;
+    if (item.imgBytes && item.imgBytes.length > 0) {
+      var h = quickHash(item.imgBytes);
+      if (pdfHashToObjNum[h] !== undefined && !usedObjNums[pdfHashToObjNum[h]]) {
+        var objNum = pdfHashToObjNum[h];
+        altMap[objNum] = item.altText.trim();
+        usedObjNums[objNum] = true;
+        matched = true;
+      }
     }
-    pdfIdx++;
+    if (!matched) unmatched.push(item);
   }
 
-  // Collect injection points
+  // Positional fallback for any unmatched items
+  var unmatchedPdf = pdfImages.filter(function(img) { return !usedObjNums[img.objNum]; });
+  for (var i = 0; i < unmatched.length && i < unmatchedPdf.length; i++) {
+    var objNum = unmatchedPdf[i].objNum;
+    altMap[objNum] = unmatched[i].altText.trim();
+    usedObjNums[objNum] = true;
+  }
+
+  // Inject /Alt into PDF bytes (back-to-front to preserve offsets)
   var injections = [];
   var objNums = Object.keys(altMap);
   for (var k = 0; k < objNums.length; k++) {
@@ -627,15 +700,16 @@ function injectAltTextsIntoPdf(pdfBuf, altTexts) {
     if (objIdx === -1) continue;
     var objSnippet = text.slice(objIdx, objIdx + 500);
     if (objSnippet.indexOf("/Subtype /Image") === -1 && objSnippet.indexOf("/Subtype/Image") === -1) continue;
+    if (objSnippet.indexOf("/Alt") !== -1) continue; // already tagged
     var gtgt = objSnippet.indexOf(">>");
     if (gtgt === -1) continue;
     var escaped = altText.split("\\").join("\\\\").split("(").join("\\(").split(")").join("\\)");
-    injections.push({pos: objIdx + gtgt, text: "\n/Alt (" + escaped + ")"});
+    injections.push({ pos: objIdx + gtgt, text: "\n/Alt (" + escaped + ")" });
   }
 
   if (injections.length === 0) return pdfBuf;
 
-  injections.sort(function(a, b){ return b.pos - a.pos; });
+  injections.sort(function(a, b) { return b.pos - a.pos; });
   for (var j = 0; j < injections.length; j++) {
     var inj = injections[j];
     text = text.slice(0, inj.pos) + inj.text + text.slice(inj.pos);
@@ -749,12 +823,15 @@ async function buildDocument() {
     // Convert DOCX -> PDF via worker
     document.getElementById("overlay-label").textContent = "Converting to PDF...";
     setStep("step-convert-out", "active");
-    // Collect approved alt texts in order to inject into final PDF
-    var altTextsOrdered = imageItems.map(function(item) {
-      return item.status === "approved" && item.altText && item.altText.trim()
-        ? item.altText.trim() : null;
-    });
-    var pdfBuf = await convertDocxToPdf(docxBytes.buffer, altTextsOrdered);
+    // Collect approved items with raw image bytes for hash-based PDF injection
+    var altTextItems = [];
+    for (var i = 0; i < imageItems.length; i++) {
+      var item = imageItems[i];
+      if (item.status === "approved" && item.altText && item.altText.trim()) {
+        altTextItems.push({ altText: item.altText.trim(), imgBytes: item.imgBytes || null });
+      }
+    }
+    var pdfBuf = await convertDocxToPdf(docxBytes.buffer, altTextItems);
     setStep("step-convert-out", "done");
 
     // Download the PDF
@@ -896,6 +973,7 @@ async function run(file) {
         var b64     = bufToB64(imgBuf);
         var rawUrl  = "data:" + mime + ";base64," + b64;
         item.fullUrl  = rawUrl;
+        item.imgBytes = new Uint8Array(imgBuf); // store raw bytes for hash-matching during PDF injection
         item.thumbUrl = await makeThumbnail(rawUrl);
 
         var alt = await describeImage(b64, mime);
