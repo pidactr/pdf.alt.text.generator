@@ -607,9 +607,8 @@ function injectAltTextsIntoPdf(pdfBuf, altTexts) {
     if (objSnippet.indexOf("/Subtype /Image") === -1 && objSnippet.indexOf("/Subtype/Image") === -1) continue;
     var gtgt = objSnippet.indexOf(">>");
     if (gtgt === -1) continue;
-    var escaped = altText.split("\").join("\\").split("(").join("\(").split(")").join("\)");
-    injections.push({pos: objIdx + gtgt, text: "
-/Alt (" + escaped + ")"});
+    var escaped = altText.split("\\").join("\\\\").split("(").join("\\(").split(")").join("\\)");
+    injections.push({pos: objIdx + gtgt, text: "\n/Alt (" + escaped + ")"});
   }
 
   if (injections.length === 0) return pdfBuf;
