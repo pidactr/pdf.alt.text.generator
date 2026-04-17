@@ -73,6 +73,22 @@ h1 span{color:#c9a84c}
 .card{background:rgba(255,255,255,.02);border:1px solid #1e2030;border-radius:12px;padding:16px 10px;text-align:center}
 .ci{font-size:20px;margin-bottom:6px}.ct{color:#c9a84c;font-size:10px;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px}.cd{color:#555570;font-size:11px;line-height:1.5}
 @keyframes spin{to{transform:rotate(360deg)}}
+/* User guide */
+.guide-wrap{width:100%;max-width:600px;margin-bottom:24px}
+.guide-toggle{width:100%;background:rgba(255,255,255,.02);border:1px solid #2a2d40;border-radius:12px;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;color:#c9a84c;font-family:Georgia,serif;font-size:14px;letter-spacing:.5px;text-align:left}
+.guide-toggle:hover{background:rgba(255,255,255,.04)}
+.guide-arrow{font-size:12px;transition:transform .3s;display:inline-block}
+.guide-arrow.open{transform:rotate(180deg)}
+.guide-body{display:none;background:rgba(255,255,255,.02);border:1px solid #2a2d40;border-top:none;border-radius:0 0 12px 12px;padding:20px 24px;font-size:13px;color:#a0a0b8;line-height:1.8}
+.guide-body.open{display:block}
+.guide-body h3{color:#c9a84c;font-size:12px;letter-spacing:2px;text-transform:uppercase;margin:16px 0 8px;font-family:Georgia,serif}
+.guide-body h3:first-child{margin-top:0}
+.guide-body ul{padding-left:18px;margin-bottom:8px}
+.guide-body li{margin-bottom:6px}
+.guide-body .tag{display:inline-block;background:rgba(93,190,110,.1);border:1px solid #2a5030;color:#5dbe6e;border-radius:4px;padding:1px 7px;font-size:11px;font-family:Courier New,monospace;margin-right:4px}
+.guide-body .warn{display:inline-block;background:rgba(201,168,76,.1);border:1px solid #3a3010;color:#c9a84c;border-radius:4px;padding:1px 7px;font-size:11px;font-family:Courier New,monospace;margin-right:4px}
+.guide-body .step{display:flex;gap:10px;margin-bottom:8px}
+.guide-body .step-num{flex-shrink:0;width:20px;height:20px;background:#c9a84c;color:#0f1117;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-top:2px}
 </style>
 </head>
 <body>
@@ -95,6 +111,47 @@ h1 span{color:#c9a84c}
 <div class="eyebrow">Accessibility Tools</div>
 <h1>PDF<br><span>Alt Text Generator</span></h1>
 <p class="sub">Upload a PDF. Claude analyzes every image and generates alt text. Review, approve, then download your accessible PDF — no external conversion needed.</p>
+
+<div class="guide-wrap">
+  <button class="guide-toggle" onclick="toggleGuide(this)">
+    &#x1F4D6;&nbsp;&nbsp;User Guide &amp; What This Tool Covers
+    <span class="guide-arrow">&#x25BC;</span>
+  </button>
+  <div class="guide-body">
+
+    <h3>What This Tool Does</h3>
+    <ul>
+      <li>Extracts all embedded raster images from your PDF (photos, scanned graphics, PNG/JPEG-type images embedded in the document).</li>
+      <li>Sends each image to Claude AI and generates a descriptive alt text sentence.</li>
+      <li>You review and approve each alt text, then download an accessible PDF with <span class="tag">/Alt</span> tags embedded directly into the file.</li>
+    </ul>
+
+    <h3>What This Tool Does NOT Cover</h3>
+    <ul>
+      <li><strong>Vector graphics</strong> — charts, diagrams, or illustrations drawn as PDF vector paths (common in InDesign/Illustrator exports). These cannot be extracted as images.</li>
+      <li><strong>Decorative rule lines or shape elements</strong> drawn directly in the PDF content stream.</li>
+      <li><strong>Inline images</strong> — rare, but some PDFs embed images inline in the content stream rather than as XObjects.</li>
+    </ul>
+    <p style="margin-top:8px">For these, use Adobe Acrobat Pro to add alt text manually (see steps below).</p>
+
+    <h3>How to Add Alt Text Manually in Adobe Acrobat Pro</h3>
+    <div class="step"><div class="step-num">1</div><div>Open the PDF in <strong>Adobe Acrobat Pro</strong>.</div></div>
+    <div class="step"><div class="step-num">2</div><div>Go to <strong>All Tools &rarr; Prepare for Accessibility</strong> (or <strong>Tools &rarr; Accessibility</strong> in older versions).</div></div>
+    <div class="step"><div class="step-num">3</div><div>Click <strong>Fix Reading Order</strong>. The Reading Order panel opens and overlays the document with tagged regions.</div></div>
+    <div class="step"><div class="step-num">4</div><div>Click on a figure or graphic region. If it shows as <span class="warn">Figure</span>, right-click it and choose <strong>Edit Alternate Text</strong>.</div></div>
+    <div class="step"><div class="step-num">5</div><div>Type the alt text description and click <strong>OK</strong>.</div></div>
+    <div class="step"><div class="step-num">6</div><div>Repeat for each untagged or untagged graphic. Save the PDF when done.</div></div>
+    <p style="margin-top:12px">Alternatively: <strong>Edit PDF &rarr; right-click any image &rarr; Edit Alt Text</strong> works for embedded raster images directly without the Reading Order panel.</p>
+
+    <h3>WCAG 2.1 Level AA — Alt Text Requirements</h3>
+    <ul>
+      <li>All non-decorative images, graphs, charts, and figures must have descriptive alt text (Success Criterion 1.1.1).</li>
+      <li>Purely decorative images should have empty alt text (<span class="tag">""</span>) so screen readers skip them.</li>
+      <li>Alt text should be concise and descriptive — typically one sentence describing what the image conveys, not just what it looks like.</li>
+    </ul>
+
+  </div>
+</div>
 
 <div id="status-bar"></div>
 
@@ -483,6 +540,14 @@ async function run(file){
     setBusy(false);zone.style.display="";
     showStatus("Error: "+e.message,"err");
   }
+}
+
+function toggleGuide(btn){
+  var arrow=btn.querySelector(".guide-arrow");
+  var body=btn.nextElementSibling;
+  var isOpen=body.classList.contains("open");
+  body.classList.toggle("open",!isOpen);
+  arrow.classList.toggle("open",!isOpen);
 }
 </script>
 </body>
