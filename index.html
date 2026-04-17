@@ -35,7 +35,6 @@ h1 span{color:#c9a84c}
 #status-bar.info{background:rgba(201,168,76,.08);border:1px solid #3a3010;color:#c9a84c;display:block}
 #status-bar.ok{background:rgba(93,190,110,.08);border:1px solid #1e4022;color:#5dbe6e;display:block}
 #status-bar.err{background:rgba(224,85,85,.08);border:1px solid #4a1010;color:#e05555;display:block}
-#new-doc-top{display:none;width:100%;max-width:600px;margin-bottom:20px;text-align:center}
 #review-panel{display:none;width:100%;max-width:600px}
 #review-panel.on{display:block}
 .review-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:8px}
@@ -97,10 +96,6 @@ h1 span{color:#c9a84c}
 <h1>PDF<br><span>Alt Text Generator</span></h1>
 <p class="sub">Upload a PDF. Claude analyzes every image and generates alt text. Review, approve, then download your accessible PDF — no external conversion needed.</p>
 
-<div id="new-doc-top">
-  <button class="btn-ghost" onclick="resetTool()">&#8592; Process Another PDF</button>
-</div>
-
 <div id="status-bar"></div>
 
 <div class="spin-wrap" id="spin-wrap">
@@ -110,8 +105,9 @@ h1 span{color:#c9a84c}
 
 <div class="zone" id="drop-zone">
   <div class="upload-icon">&#x1F4C4;</div>
-  <input type="file" id="file-input" accept=".pdf,application/pdf"/>
-  <p class="hint">Drag and drop a PDF here, or click above to browse</p>
+  <label for="file-input" class="btn-gold" style="display:inline-block;cursor:pointer;margin-bottom:12px">Click here to upload a PDF file</label>
+  <input type="file" id="file-input" accept=".pdf,application/pdf" style="display:none"/>
+  <p class="hint">or drag and drop a PDF here</p>
 </div>
 
 <div id="review-panel">
@@ -119,16 +115,16 @@ h1 span{color:#c9a84c}
     <div class="review-title">Review Alt Text</div>
     <div class="progress-text" id="progress-text"></div>
   </div>
-  <div style="display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap">
-    <button class="btn-gold" onclick="approveAll()">&#x2713;&#x2713; Approve All</button>
-  </div>
   <div id="cards"></div>
 </div>
 
 <div id="finalize-bar">
   <div class="finalize-summary" id="finalize-summary"></div>
-  <button class="btn-gold" onclick="buildDocument()">&#x2913; Download Accessible PDF</button><br>
-  <button class="btn-ghost" onclick="resetTool()">Start Over</button>
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:12px">
+    <button class="btn-gold" onclick="approveAll()">&#x2713;&#x2713; Approve All</button>
+    <button class="btn-gold" onclick="buildDocument()">&#x2913; Download Accessible PDF</button>
+  </div>
+  <button class="btn-ghost" onclick="resetTool()">&#x1F4C4; Process New PDF</button>
 </div>
 
 <div class="cards">
@@ -186,7 +182,7 @@ function updateProgress(){
   progressText.textContent=approved+" of "+total+" approved";
   var s=document.getElementById("finalize-summary");
   if(s)s.innerHTML="<strong>"+approved+"</strong> of <strong>"+total+"</strong> images approved for alt text";
-  if(approved>0)finalizeBar.classList.add("on");
+  finalizeBar.classList.add("on"); // always show action bar once images are loaded
 }
 
 function renderCard(item,cardEl){
@@ -235,7 +231,6 @@ function resetTool(){
   imageItems=[];originalPdfBuf=null;originalFileName="";
   cardsEl.innerHTML="";
   reviewPanel.classList.remove("on");finalizeBar.classList.remove("on");
-  document.getElementById("new-doc-top").style.display="none";
   zone.style.display="";fileInput.value="";
   hideStatus();setBusy(false);
   window.scrollTo({top:0,behavior:"smooth"});
@@ -399,9 +394,8 @@ function buildDocument(){
   document.body.appendChild(a);a.click();document.body.removeChild(a);
   URL.revokeObjectURL(url);
 
-  document.getElementById("new-doc-top").style.display="block";
-  window.scrollTo({top:0,behavior:"smooth"});
   showStatus("Downloaded! "+approved.length+" images tagged with alt text.","ok");
+  window.scrollTo({top:0,behavior:"smooth"});
 }
 
 // Drag & drop
